@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111323">
+<title>Star Plaza · 游戏渲染器 VRM 兼容测试</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:#111323;color:#f4f5ff;font:15px system-ui,-apple-system,"Segoe UI",sans-serif}
+body{padding:14px;display:flex;flex-direction:column;gap:12px}
+h1{font-size:19px;margin:2px 0 0}p{margin:0;color:#b8bfd6;line-height:1.55}
+.panel{background:#1b2035;border:1px solid #343b59;border-radius:14px;padding:13px}
+.actions{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+button,.filebtn,select{border:1px solid #485273;background:#303957;color:#fff;border-radius:10px;padding:10px 13px;font-size:14px}
+.filebtn{display:inline-block;background:#6554c8;border-color:#8173e7;font-weight:700}
+input{display:none}select{max-width:100%}
+#stage{height:min(65vh,620px);min-height:340px;border-radius:14px;overflow:hidden;background:linear-gradient(#292e49,#171a2a);border:1px solid #343b59}
+canvas{display:block;width:100%;height:100%}
+#status{font-weight:650;color:#f4f5ff}
+#details{font-size:13px;color:#b8bfd6;white-space:pre-wrap;line-height:1.6;margin-top:8px}
+.warn{font-size:13px;color:#f2d59b}
+.good{color:#8fe0b4!important}.bad{color:#ff9caa!important}
+</style>
+</head>
+<body>
+<h1>Star Plaza · 游戏渲染器 VRM 兼容测试</h1>
+<p>此页面直接调用正式游戏的 <b>js/glbchar.js</b>，不使用 VRM 专用插件。不会修改正式游戏或替换 girl.glb。</p>
+<section class="panel">
+  <div class="actions">
+    <label class="filebtn" for="modelFile">选择 .vrm 人物</label>
+    <input id="modelFile" type="file" accept=".vrm,.glb,model/gltf-binary">
+    <label>动作： <select id="animSelect" disabled><option value="">没有可用动作</option></select></label>
+  </div>
+  <p id="status" style="margin-top:11px">等待选择 VRM 文件…</p>
+  <div id="details"></div>
+</section>
+<div id="stage"><canvas id="view"></canvas></div>
+<section class="panel">
+  <p class="warn">测试范围：检查模型网格、贴图、骨骼和内置动画能否被游戏现有渲染器读取。VRM 表情、弹簧骨骼（头发摆动）和 VRM 专属材质并未在这次测试中实现。</p>
+</section>
+<script src="js/glbchar.js"></script>
+<script>
+(() => {
+  const canvas = document.getElementById('view');
+  const fileInput = document.getElementById('modelFile');
+  const statusEl = document.getElementById('status');
+  const detailsEl = document.getElementById('details');
+  const animSelect = document.getElementById('animSelect');
+  let renderer = null, model = null, instance = null;
+  let last = performance.now(), lastError = null;
+
+  function status(message, cls) {
+    statusEl.textContent = message;
+    statusEl.className = cls || '';
+  }
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w; canvas.height = h;
+    }
+  }
+  function ensureRenderer() {
+    if (!window.GLBChar) throw new Error('正式游戏的 GLBChar 脚本没有加载成功');
+    if (!renderer) renderer = GLBChar.createRenderer(canvas, {});
+    resize();
+  }
+
+  async function loadFile(file) {
+    if (!file) return;
+    try {
+      status('正在使用游戏原有渲染器读取 ' + file.name + ' …');
+      detailsEl.textContent = '文件大小：' + (file.size / 1024 / 1024).toFixed(2) + ' MB';
+      animSelect.disabled = true;
+      ensureRenderer();
+
+      const buffer = await file.arrayBuffer();
+      const nextModel = await GLBChar.loadModel(buffer, renderer);
+      if (!nextModel.meshes || !nextModel.meshes.length) {
+        throw new Error('文件读取成功，但没有可绘制的网格');
+      }
+      const nextInstance = GLBChar.makeInstance(nextModel, renderer);
+      const names = Object.keys(nextModel.anims || {});
+      model = nextModel;
+      instance = nextInstance;
+
+      animSelect.innerHTML = '';
+      if (names.length) {
+        for (const name of names) {
+          const option = document.createElement('option');
+          option.value = name; option.textContent = name;
+          animSelect.appendChild(option);
+        }
+        animSelect.disabled = false;
+        instance.play(names[0], 0.01, true);
+      } else {
+        const option = document.createElement('option');
+        option.value = ''; option.textContent = '模型没有内置动画';
+        animSelect.appendChild(option);
+      }
+
+      detailsEl.textContent =
+        '文件大小：' + (file.size / 1024 / 1024).toFixed(2) + ' MB\n' +
+        '节点：' + nextModel.n + ' · 网格：' + nextModel.meshes.length +
+        ' · 骨骼组：' + nextModel.skins.length + ' · 动画：' + names.length +
+        (names.length ? '\n动作：' + names.join('、') : '');
+      status('模型已由游戏 GLBChar 加载，正在检查实际绘制…');
+      lastError = null;
+    } catch (err) {
+      instance = null; model = null;
+      status('加载失败：' + (err && err.message ? err.message : String(err)), 'bad');
+      detailsEl.textContent = '这表示该 VRM 的基础 glTF 结构或其中某项资源，超出了当前游戏渲染器的支持范围。';
+      console.error(err);
+    }
+  }
+
+  fileInput.addEventListener('change', e => loadFile(e.target.files && e.target.files[0]));
+  animSelect.addEventListener('change', () => {
+    if (instance && animSelect.value) instance.play(animSelect.value, 0.2, true);
+  });
+  window.addEventListener('resize', resize);
+
+  function frame(now) {
+    const dt = Math.min(Math.max((now - last) / 1000, 0), 0.05);
+    last = now;
+    if (renderer && instance) {
+      try {
+        resize();
+        const w = canvas.width, h = canvas.height;
+        renderer.begin(w, h, [0.10, 0.11, 0.17, 1]);
+        instance.update(dt);
+        const vp = renderer.viewProj({
+          yaw: 0, pitch: 0, halfH: 1.05, target: [0, 0.82, 0]
+        }, w, h);
+        renderer.draw(instance, vp, {
+          outline: 0.0035,
+          amb: [0.68, 0.66, 0.78],
+          sun: [0.46, 0.43, 0.30],
+          line: [0.18, 0.14, 0.23],
+          light: [-0.35, 0.65, 1],
+          view: [0, 0.5, 1]
+        });
+        const glError = renderer.gl.getError();
+        if (glError === renderer.gl.NO_ERROR && statusEl.textContent.indexOf('已通过') !== 0) {
+          status('已通过：游戏原有 GLBChar 渲染器成功绘制这个模型。', 'good');
+        } else if (glError !== renderer.gl.NO_ERROR && glError !== lastError) {
+          lastError = glError;
+          status('模型已读取，但绘制时出现 WebGL 错误：' + glError, 'bad');
+        }
+      } catch (err) {
+        status('绘制失败：' + (err && err.message ? err.message : String(err)), 'bad');
+        console.error(err);
+        instance = null;
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
