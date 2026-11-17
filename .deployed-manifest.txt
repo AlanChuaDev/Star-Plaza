@@ -112,3 +112,4 @@ package.json
 server.js
 social.js
 wallet.js
+avatar-vrm-test.html
