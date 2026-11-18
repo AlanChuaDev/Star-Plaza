@@ -337,7 +337,7 @@ function createRenderer(canvas, opts) {
         gl.uniform1f(U.uOutline, outlinePass ? outW * (p.name.indexOf('Hair') === 0 ? .75 : p.name === 'Choker' ? .35 : 1) : 0);   // [创建面板] Hair0-4 / HairM0-1 都按头发处理
         gl.uniform4fv(U.uBase, p.base); const rc = inst.recolor && inst.recolor[p.name]; gl.uniform4fv(U.uRecol, rc || [0, 0, 0, 0]); const tn = inst.tints && inst.tints[p.name]; gl.uniform3fv(U.uTint, tn || inst.tint); gl.uniform1f(U.uMask, p.mask ? 1 : 0); gl.uniform1f(U.uCut, p.cutoff);
         const tx = (inst.texOv && inst.texOv[p.name]) || p.tex; gl.activeTexture(gl.TEXTURE0); if (tx) gl.bindTexture(gl.TEXTURE_2D, tx); gl.uniform1f(U.uHasTex, tx ? 1 : 0);   // [创建面板] inst.texOv：单个角色覆盖贴图
-        if (p.double) gl.disable(gl.CULL_FACE); else gl.enable(gl.CULL_FACE);
+        if (p.double && !outlinePass) gl.disable(gl.CULL_FACE); else gl.enable(gl.CULL_FACE);   // 描边层永远剔除正面：双面材质(VRM 的衣服/头发/鞋)若也关剔除，膨胀的描边壳会盖住整件衣服变成一片黑紫
         gl.bindVertexArray(vaoFor(inst, p)); gl.drawElements(gl.TRIANGLES, p.count, p.itype, 0);
       }
     };
@@ -402,8 +402,11 @@ function addActions(model) {
     { spine: pr(0, 7 * sw), chest: pr(0, 4 * sw), head: pr(-3, -6 * sw) }) });
   clip('dance', 1.6, [Object.assign({ t: 0 }, dance(1, 1, 1)), Object.assign({ t: .4 }, dance(0, 1, 1)), Object.assign({ t: .8 }, dance(-1, -1, -1)), Object.assign({ t: 1.2 }, dance(0, -1, -1)), Object.assign({ t: 1.6 }, dance(1, 1, 1))]);
   // ----- clap -----
-  const clap = (open) => ({ r: merge(arms('L', -62, open ? 8 : -34, -125, open ? 6 : -104), arms('R', -62, open ? 8 : -34, -125, open ? 6 : -104), { head: pr(-4, 0) }) });
-  clip('clap', .5, [Object.assign({ t: 0 }, clap(true)), Object.assign({ t: .22 }, clap(false)), Object.assign({ t: .5 }, clap(true))]);
+  // 拍手：双肘弯曲、前臂向前并向中线收拢，掌心相对，在胸前一开一合
+  const clapAt = (P, open) => { const m = (sg, o) => ({ ['upperarm.' + sg]: pr(P.pu, (sg === 'L' ? 1 : -1) * P.ru), ['forearm.' + sg]: pr(P.pf, 0, (sg === 'L' ? 1 : -1) * (open ? P.yo : P.yc)) }); return { r: merge(m('L'), m('R'), { head: pr(-3, 0), spine: pr(-2, 0) }) }; };
+  const CLAP = { pu: -55, ru: 14, pf: -105, yo: -32, yc: -46 };
+  const clapClip = (nm, P) => clip(nm, .5, [Object.assign({ t: 0 }, clapAt(P, true)), Object.assign({ t: .22 }, clapAt(P, false)), Object.assign({ t: .5 }, clapAt(P, true))]);
+  clapClip('clap', CLAP);
 
   // ===== 新动作（v3）：举牌 ✔/❌、拍照、鞠躬、比心、点赞、指向，以及坐着也能做的版本（sit_xxx） =====
   // 牌子是 GLB 里的 SignOK / SignNo 两块网格，绑在 hand.R 上。做举牌动作时 hand.R 整个转 180° 让牌子朝上，
