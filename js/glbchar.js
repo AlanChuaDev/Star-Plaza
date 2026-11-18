@@ -67,7 +67,7 @@ async function loadModel(url, renderer) {
   const buf = typeof url === 'string' ? await (await fetch(url)).arrayBuffer() : url;
   const { json: g, bin } = parseGLB(buf);
   const n = g.nodes.length;
-  const m = { g, nodes: g.nodes, n, parent: new Int32Array(n).fill(-1), restT: new Float32Array(n * 3), restR: new Float32Array(n * 4), restS: new Float32Array(n * 3), order: [], meshes: [], anims: {}, names: {} };
+  const m = { g, nodes: g.nodes, n, parent: new Int32Array(n).fill(-1), restT: new Float32Array(n * 3), restR: new Float32Array(n * 4), restS: new Float32Array(n * 3), order: [], meshes: [], anims: {}, names: {}, vrm: !!(g.extensionsUsed && (g.extensionsUsed.indexOf('VRMC_vrm') >= 0 || g.extensionsUsed.indexOf('VRM') >= 0)) };
   g.nodes.forEach((nd, i) => {
     (nd.children || []).forEach(c => m.parent[c] = i);
     m.restT.set(nd.translation || [0, 0, 0], i * 3); m.restR.set(nd.rotation || [0, 0, 0, 1], i * 4); m.restS.set(nd.scale || [1, 1, 1], i * 3);
@@ -118,7 +118,7 @@ async function loadModel(url, renderer) {
       if (idx instanceof Uint8Array) idx = Uint16Array.from(idx);
       const mat = g.materials && p.material != null ? g.materials[p.material] : {}, pbr = mat.pbrMetallicRoughness || {};
       const prim = { node: ni, name: nd.name || ('mesh' + ni), skin: skinned ? nd.skin : -1, count: idx.length, itype: idx instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT,
-        base: pbr.baseColorFactor || [1, 1, 1, 1], tex: pbr.baseColorTexture ? getTex(pbr.baseColorTexture.index) : null, mask: mat.alphaMode === 'MASK', blend: mat.alphaMode === 'BLEND', cutoff: mat.alphaCutoff != null ? mat.alphaCutoff : .5, double: !!mat.doubleSided,
+        base: pbr.baseColorFactor || [1, 1, 1, 1], tex: pbr.baseColorTexture ? getTex(pbr.baseColorTexture.index) : null, mask: mat.alphaMode === 'MASK', blend: mat.alphaMode === 'BLEND', vskin: /SKIN/.test(mat.name || ''), cutoff: mat.alphaCutoff != null ? mat.alphaCutoff : .5, double: !!mat.doubleSided,
         hidden: !!(nd.extras && nd.extras.defaultHidden), pos0: /^(Head|Ear|Hair)/.test(nd.name || '') ? pos.data : null /* [创建面板] 脸型变形要用 */, bufs: { pos: buffer(pos.data), nrm: buffer(nrm), col: buffer(col), uv: buffer(uv), J: buffer(J), W: buffer(W), idx: buffer(idx, gl.ELEMENT_ARRAY_BUFFER) } };
       m.meshes.push(prim);
     });
@@ -237,7 +237,7 @@ void main(){
 const FS = `#version 300 es
 precision highp float;
 in vec3 vN; in vec4 vC; in vec2 vUV;
-uniform sampler2D uTex; uniform float uHasTex; uniform vec4 uBase; uniform vec3 uTint; uniform vec3 uLight; uniform vec3 uView; uniform float uPass; uniform vec3 uLine; uniform float uMask; uniform float uCut; uniform float uBlend; uniform vec3 uRim; uniform vec3 uAmb; uniform vec3 uSunCol; uniform vec4 uRecol;
+uniform sampler2D uTex; uniform float uHasTex; uniform vec4 uBase; uniform vec3 uTint; uniform vec3 uLight; uniform vec3 uView; uniform float uPass; uniform vec3 uLine; uniform float uMask; uniform float uCut; uniform float uBlend; uniform float uVrm; uniform vec3 uRim; uniform vec3 uAmb; uniform vec3 uSunCol; uniform vec4 uRecol;
 out vec4 o;
 void main(){
   vec4 base=uBase*vC; if(uHasTex>.5) base*=texture(uTex,vUV);
@@ -250,6 +250,10 @@ void main(){
   vec3 shade=uAmb+uSunCol*lit;
   float rim=pow(1.0-clamp(dot(n,normalize(uView)),0.0,1.0),3.0)*smoothstep(-.3,.4,-d+.2);
   vec3 col=base.rgb*uTint*shade+uRim*rim*.35*(uAmb.b+.2);
+  if(uVrm>.5){   // VRM(MToon) 人物：贴图是 sRGB，在线性空间里打光再转回，肤色才不会发黄发暗
+    vec3 lin=pow(base.rgb,vec3(2.2))*uTint; float L=.72+.52*lit; float lift=uVrm>1.5?.11*smoothstep(.12,.32,dot(lin,vec3(.3,.59,.11))):0.0;   // 只提亮皮肤色，身体贴图里画的黑上衣/项圈保持原色
+    col=pow(clamp(lin*L+vec3(lift)+uRim*rim*.01,0.0,1.0),vec3(1.0/2.2));
+  }
   o=vec4(col,uBlend>.5?base.a:1.0);
 }`;
 
@@ -263,7 +267,7 @@ function createRenderer(canvas, opts) {
   Object.keys(locs).forEach(k => gl.bindAttribLocation(pr, locs[k], k));
   gl.linkProgram(pr); if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pr));
   gl.useProgram(pr);
-  const U = {}; ['uBones', 'uVP', 'uModel', 'uOutline', 'uSkinned', 'uTex', 'uHasTex', 'uBase', 'uTint', 'uLight', 'uView', 'uPass', 'uLine', 'uMask', 'uCut', 'uBlend', 'uRim', 'uAmb', 'uSunCol', 'uRecol'].forEach(k => U[k] = gl.getUniformLocation(pr, k));
+  const U = {}; ['uBones', 'uVP', 'uModel', 'uOutline', 'uSkinned', 'uTex', 'uHasTex', 'uBase', 'uTint', 'uLight', 'uView', 'uPass', 'uLine', 'uMask', 'uCut', 'uBlend', 'uVrm', 'uRim', 'uAmb', 'uSunCol', 'uRecol'].forEach(k => U[k] = gl.getUniformLocation(pr, k));
   const r = { gl, canvas, vaos: new WeakMap() };
   r.makeBoneTexture = nJ => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, nJ * 4, 1, 0, gl.RGBA, gl.FLOAT, null); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
   const buildVao = (p, posBuf) => {
@@ -334,7 +338,7 @@ function createRenderer(canvas, opts) {
         }
         gl.uniform1f(U.uSkinned, p.skin >= 0 ? 1 : 0);
         if (p.skin < 0) gl.uniformMatrix4fv(U.uModel, false, mul(M, inst.world.subarray(p.node * 16, p.node * 16 + 16)));
-        gl.uniform1f(U.uPass, outlinePass ? 1 : 0); gl.uniform1f(U.uBlend, p.blend ? 1 : 0);
+        gl.uniform1f(U.uPass, outlinePass ? 1 : 0); gl.uniform1f(U.uBlend, p.blend ? 1 : 0); gl.uniform1f(U.uVrm, m.vrm ? (p.vskin ? 2 : 1) : 0);
         gl.uniform1f(U.uOutline, outlinePass ? outW * (p.name.indexOf('Hair') === 0 ? .75 : p.name === 'Choker' ? .35 : 1) : 0);   // [创建面板] Hair0-4 / HairM0-1 都按头发处理
         gl.uniform4fv(U.uBase, p.base); const rc = inst.recolor && inst.recolor[p.name]; gl.uniform4fv(U.uRecol, rc || [0, 0, 0, 0]); const tn = inst.tints && inst.tints[p.name]; gl.uniform3fv(U.uTint, tn || inst.tint); gl.uniform1f(U.uMask, p.mask ? 1 : 0); gl.uniform1f(U.uCut, p.cutoff);
         const tx = (inst.texOv && inst.texOv[p.name]) || p.tex; gl.activeTexture(gl.TEXTURE0); if (tx) gl.bindTexture(gl.TEXTURE_2D, tx); gl.uniform1f(U.uHasTex, tx ? 1 : 0);   // [创建面板] inst.texOv：单个角色覆盖贴图
