@@ -118,7 +118,7 @@ async function loadModel(url, renderer) {
       if (idx instanceof Uint8Array) idx = Uint16Array.from(idx);
       const mat = g.materials && p.material != null ? g.materials[p.material] : {}, pbr = mat.pbrMetallicRoughness || {};
       const prim = { node: ni, name: nd.name || ('mesh' + ni), skin: skinned ? nd.skin : -1, count: idx.length, itype: idx instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT,
-        base: pbr.baseColorFactor || [1, 1, 1, 1], tex: pbr.baseColorTexture ? getTex(pbr.baseColorTexture.index) : null, mask: mat.alphaMode === 'MASK', cutoff: mat.alphaCutoff != null ? mat.alphaCutoff : .5, double: !!mat.doubleSided,
+        base: pbr.baseColorFactor || [1, 1, 1, 1], tex: pbr.baseColorTexture ? getTex(pbr.baseColorTexture.index) : null, mask: mat.alphaMode === 'MASK', blend: mat.alphaMode === 'BLEND', cutoff: mat.alphaCutoff != null ? mat.alphaCutoff : .5, double: !!mat.doubleSided,
         hidden: !!(nd.extras && nd.extras.defaultHidden), pos0: /^(Head|Ear|Hair)/.test(nd.name || '') ? pos.data : null /* [创建面板] 脸型变形要用 */, bufs: { pos: buffer(pos.data), nrm: buffer(nrm), col: buffer(col), uv: buffer(uv), J: buffer(J), W: buffer(W), idx: buffer(idx, gl.ELEMENT_ARRAY_BUFFER) } };
       m.meshes.push(prim);
     });
@@ -237,7 +237,7 @@ void main(){
 const FS = `#version 300 es
 precision highp float;
 in vec3 vN; in vec4 vC; in vec2 vUV;
-uniform sampler2D uTex; uniform float uHasTex; uniform vec4 uBase; uniform vec3 uTint; uniform vec3 uLight; uniform vec3 uView; uniform float uPass; uniform vec3 uLine; uniform float uMask; uniform float uCut; uniform vec3 uRim; uniform vec3 uAmb; uniform vec3 uSunCol; uniform vec4 uRecol;
+uniform sampler2D uTex; uniform float uHasTex; uniform vec4 uBase; uniform vec3 uTint; uniform vec3 uLight; uniform vec3 uView; uniform float uPass; uniform vec3 uLine; uniform float uMask; uniform float uCut; uniform float uBlend; uniform vec3 uRim; uniform vec3 uAmb; uniform vec3 uSunCol; uniform vec4 uRecol;
 out vec4 o;
 void main(){
   vec4 base=uBase*vC; if(uHasTex>.5) base*=texture(uTex,vUV);
@@ -250,7 +250,7 @@ void main(){
   vec3 shade=uAmb+uSunCol*lit;
   float rim=pow(1.0-clamp(dot(n,normalize(uView)),0.0,1.0),3.0)*smoothstep(-.3,.4,-d+.2);
   vec3 col=base.rgb*uTint*shade+uRim*rim*.35*(uAmb.b+.2);
-  o=vec4(col,1.0);
+  o=vec4(col,uBlend>.5?base.a:1.0);
 }`;
 
 function createRenderer(canvas, opts) {
@@ -263,7 +263,7 @@ function createRenderer(canvas, opts) {
   Object.keys(locs).forEach(k => gl.bindAttribLocation(pr, locs[k], k));
   gl.linkProgram(pr); if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pr));
   gl.useProgram(pr);
-  const U = {}; ['uBones', 'uVP', 'uModel', 'uOutline', 'uSkinned', 'uTex', 'uHasTex', 'uBase', 'uTint', 'uLight', 'uView', 'uPass', 'uLine', 'uMask', 'uCut', 'uRim', 'uAmb', 'uSunCol', 'uRecol'].forEach(k => U[k] = gl.getUniformLocation(pr, k));
+  const U = {}; ['uBones', 'uVP', 'uModel', 'uOutline', 'uSkinned', 'uTex', 'uHasTex', 'uBase', 'uTint', 'uLight', 'uView', 'uPass', 'uLine', 'uMask', 'uCut', 'uBlend', 'uRim', 'uAmb', 'uSunCol', 'uRecol'].forEach(k => U[k] = gl.getUniformLocation(pr, k));
   const r = { gl, canvas, vaos: new WeakMap() };
   r.makeBoneTexture = nJ => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, nJ * 4, 1, 0, gl.RGBA, gl.FLOAT, null); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
   const buildVao = (p, posBuf) => {
@@ -322,10 +322,11 @@ function createRenderer(canvas, opts) {
         const male = !!mt[2]; inst.hidden[q.name] = mt[3] !== gk[mt[1] === 'L' ? 0 : 1] || !!(male ? inst.hidden.BodyM : inst.hidden.Body);
         if (inst.tints) inst.tints[q.name] = inst.tints[male ? 'BodyM' : 'Body']; }
     }
-    const pass = (outlinePass) => {
+    const pass = (outlinePass, blendPhase) => {
       gl.cullFace(outlinePass ? gl.FRONT : gl.BACK);
       for (const p of m.meshes) {
         if (inst.hidden[p.name]) continue;
+        if (!!p.blend !== !!blendPhase || (p.blend && outlinePass)) continue;   // 半透明材质(VRM 的眼白/虹膜/睫毛/眉毛)：不画描边，最后再按顺序混合
         if (outlinePass && outW <= 0) continue;
         if (p.skin >= 0 && p.skin !== upSkin) { upSkin = p.skin;
           const nJ = m.skins[p.skin].joints.length; gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, inst.boneTex);
@@ -333,7 +334,7 @@ function createRenderer(canvas, opts) {
         }
         gl.uniform1f(U.uSkinned, p.skin >= 0 ? 1 : 0);
         if (p.skin < 0) gl.uniformMatrix4fv(U.uModel, false, mul(M, inst.world.subarray(p.node * 16, p.node * 16 + 16)));
-        gl.uniform1f(U.uPass, outlinePass ? 1 : 0);
+        gl.uniform1f(U.uPass, outlinePass ? 1 : 0); gl.uniform1f(U.uBlend, p.blend ? 1 : 0);
         gl.uniform1f(U.uOutline, outlinePass ? outW * (p.name.indexOf('Hair') === 0 ? .75 : p.name === 'Choker' ? .35 : 1) : 0);   // [创建面板] Hair0-4 / HairM0-1 都按头发处理
         gl.uniform4fv(U.uBase, p.base); const rc = inst.recolor && inst.recolor[p.name]; gl.uniform4fv(U.uRecol, rc || [0, 0, 0, 0]); const tn = inst.tints && inst.tints[p.name]; gl.uniform3fv(U.uTint, tn || inst.tint); gl.uniform1f(U.uMask, p.mask ? 1 : 0); gl.uniform1f(U.uCut, p.cutoff);
         const tx = (inst.texOv && inst.texOv[p.name]) || p.tex; gl.activeTexture(gl.TEXTURE0); if (tx) gl.bindTexture(gl.TEXTURE_2D, tx); gl.uniform1f(U.uHasTex, tx ? 1 : 0);   // [创建面板] inst.texOv：单个角色覆盖贴图
@@ -342,6 +343,7 @@ function createRenderer(canvas, opts) {
       }
     };
     pass(true); pass(false);
+    if (m.meshes.some(p => p.blend)) { gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); pass(false, true); gl.depthMask(true); gl.disable(gl.BLEND); }
     gl.enable(gl.CULL_FACE);
   };
   return r;
